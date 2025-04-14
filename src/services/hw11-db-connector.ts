@@ -47,7 +47,7 @@ export class CS571HW11DbConnector {
                 allowNull: false
             },
             msg: {
-                type: DataTypes.TEXT,
+                type: DataTypes.TEXT('medium'),
                 allowNull: false
             },
             created: {
