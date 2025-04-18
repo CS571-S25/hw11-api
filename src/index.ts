@@ -23,7 +23,7 @@ declare module "express-serve-static-core" {
 
 const appBundle = CS571Initializer.init<HW11PublicConfig, HW11SecretConfig>(app, {
   allowNoAuth: [],
-  skipAuth: true
+  skipAuth: false
 });
 
 const db = new CS571HW11DbConnector(appBundle.config);
