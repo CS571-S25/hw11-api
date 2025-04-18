@@ -1,5 +1,6 @@
 import { Express } from 'express';
 
+import { pipeline, Readable, Transform } from 'stream';
 import { CS571Route } from "@cs571/api-framework/src/interfaces/route";
 import { CS571HW11DbConnector } from '../services/hw11-db-connector';
 import HW11SecretConfig from '../model/configs/hw11-secret-config';
@@ -8,9 +9,9 @@ import OpenAIMessage from '../model/openai-message';
 import OpenAIMessageRole from '../model/openai-message-role';
 import HW11PublicConfig from '../model/configs/hw11-public-config';
 
-export class CS571AICompletionsRoute implements CS571Route {
+export class CS571AICompletionsStreamRoute implements CS571Route {
 
-    public static readonly ROUTE_NAME: string = (process.env['CS571_BASE_PATH'] ?? "") + '/completions';
+    public static readonly ROUTE_NAME: string = (process.env['CS571_BASE_PATH'] ?? "") + '/completions-stream';
 
     private readonly connector: CS571HW11DbConnector;
     private readonly publicConfig: HW11PublicConfig;
@@ -23,11 +24,11 @@ export class CS571AICompletionsRoute implements CS571Route {
     }
 
     public addRoute(app: Express): void {
-        app.post(CS571AICompletionsRoute.ROUTE_NAME, async (req, res) => {
-            let isShort = req.query?.shortContext ? Boolean(req.query.shortContext) : false;
+        app.post(CS571AICompletionsStreamRoute.ROUTE_NAME, async (req, res) => {
+            let isShort = req.query?.shortContext ? req.query.shortContext === "true" : false;
             let messages;
             try {
-                messages = CS571AICompletionsRoute.validateMessages(req.body);
+                messages = CS571AICompletionsStreamRoute.validateMessages(req.body);
             } catch (e) {
                 res.status(400).send({
                     msg: "The request body does not contain a valid list of chat objects."
@@ -55,19 +56,67 @@ export class CS571AICompletionsRoute implements CS571Route {
                     },
                     body: JSON.stringify({
                         messages: messages.reduce((acc: OpenAIMessage[], msg: OpenAIMessage) => [...acc, { role: msg.role, content: msg.content }], []),
-                        max_completion_tokens: this.secretConfig.AI_COMPLETIONS_MAX_RESPONSE
+                        max_completion_tokens: this.secretConfig.AI_COMPLETIONS_MAX_RESPONSE,
+                        stream: true
                     })
-                })
-                const data = await resp.json();
-                res.status(200).send({
-                    msg: data.choices[0].message.content
                 });
+                if (resp.body) {
+                    const nodeStream = Readable.fromWeb(resp.body as any);
+                    const simplifyData = new Transform({
+                        transform(chunk, encoding, callback) {
+                            let str = chunk.toString();
+                            let respObj = {
+                                delta: ""
+                            }
+                            const lines = str.split("\n").filter((line: string) => line.trim() !== "");
+                            let dataline = "";
+                            for (const line of lines) {
+                                try {
+                                    if (line.startsWith("data: ")) {
+                                        dataline = "";
+                                        const data = line.substring(6).trim();
+                                        if (data === "[DONE]") {
+                                            break;
+                                        }
+                                        let parsedContent = JSON.parse(data)?.choices?.[0]?.delta?.content;
+                                        if (parsedContent) {
+                                            respObj.delta += parsedContent;
+                                        }
+                                    } else {
+                                        dataline += line;
+                                        let parsedContent = JSON.parse(dataline)?.choices?.[0]?.delta?.content;
+                                        if (parsedContent) {
+                                            respObj.delta += parsedContent;
+                                        }
+                                    }
+                                } catch (e) {
+                                    dataline += line;
+                                }
+                            }
+                            callback(null, JSON.stringify(respObj) +"\n");
+                        }
+                    });
+                    pipeline(
+                        nodeStream,
+                        simplifyData,
+                        res,
+                        (err: any) => {
+                            if (err) {
+                                console.error('Pipeline failed:', err);
+                                res.status(500).send({
+                                    msg: "An unknown server error occured during exection. Try again in a few minutes."
+                                });
+                            }
+                        }
+                    );
+                } else {
+                    res.end();
+                }
             } catch (e) {
                 res.status(500).send({
                     msg: "An unknown server error occured during exection. Try again in a few minutes."
                 })
             }
-
         })
     }
 
@@ -91,6 +140,6 @@ export class CS571AICompletionsRoute implements CS571Route {
     }
 
     public getRouteName(): string {
-        return CS571AICompletionsRoute.ROUTE_NAME;
+        return CS571AICompletionsStreamRoute.ROUTE_NAME;
     }
 }
