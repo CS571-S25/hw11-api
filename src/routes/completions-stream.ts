@@ -62,38 +62,50 @@ export class CS571AICompletionsStreamRoute implements CS571Route {
                 });
                 if (resp.body) {
                     const nodeStream = Readable.fromWeb(resp.body as any);
+                    let dataline = "";
                     const simplifyData = new Transform({
                         transform(chunk, encoding, callback) {
-                            let str = chunk.toString();
-                            let respObj = {
-                                delta: ""
-                            }
-                            const lines = str.split("\n").filter((line: string) => line.trim() !== "");
-                            let dataline = "";
+                            dataline += chunk.toString();
+
+                            let respObj = { delta: "" };
+                            let lines = dataline.split("\n");
+                            dataline = lines.pop() || "";
+                            
                             for (const line of lines) {
+                                const trimmed = line.trim();
+                                if (!trimmed) continue;
+
+                                let data = trimmed.startsWith("data: ") ? trimmed.substring(6).trim() : trimmed;
+
+                                if (data === "[DONE]") {
+                                    continue;
+                                }
+
                                 try {
-                                    if (line.startsWith("data: ")) {
-                                        dataline = "";
-                                        const data = line.substring(6).trim();
-                                        if (data === "[DONE]") {
-                                            break;
-                                        }
-                                        let parsedContent = JSON.parse(data)?.choices?.[0]?.delta?.content;
-                                        if (parsedContent) {
-                                            respObj.delta += parsedContent;
-                                        }
-                                    } else {
-                                        dataline += line;
-                                        let parsedContent = JSON.parse(dataline)?.choices?.[0]?.delta?.content;
-                                        if (parsedContent) {
-                                            respObj.delta += parsedContent;
-                                        }
+                                    let parsedContent = JSON.parse(data)?.choices?.[0]?.delta?.content;
+                                    if (parsedContent) {
+                                        respObj.delta += parsedContent;
                                     }
-                                } catch (e) {
-                                    dataline += line;
+                                } catch (err) {
+                                    dataline += data;
                                 }
                             }
-                            callback(null, JSON.stringify(respObj) +"\n");
+
+                            callback(null, JSON.stringify(respObj) + "\n");
+                        },
+                        flush(callback) {
+                            if (dataline.trim()) {
+                                try {
+                                    let parsedContent = JSON.parse(dataline)?.choices?.[0]?.delta?.content;
+                                    if (parsedContent) {
+                                        const respObj = { delta: parsedContent };
+                                        this.push(JSON.stringify(respObj) + "\n");
+                                    }
+                                } catch (err) {
+                                    // Ignore malformed leftover.
+                                }
+                            }
+                            callback();
                         }
                     });
                     pipeline(
